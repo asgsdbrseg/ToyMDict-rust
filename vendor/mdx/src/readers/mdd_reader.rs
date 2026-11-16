@@ -195,4 +195,17 @@ impl MddReader {
         }
         return Ok(None);
     }
+
+    /// 归一化后逐 key 比对的兜底查找（对齐 Python 版 MDD.get）。
+    /// 常规精确查找在所有候选（原样/小写 × 正/反斜杠 × 前导分隔符）都失败后，
+    /// 由上层调用本方法一次：对每个 MDD 分卷做归一化全扫描，规避 V3 ICU
+    /// collation 对中文路径 + 大小写混合资源二分定位落空的问题。
+    pub fn get_data_by_key_normalized(&mut self, file_path: &str) -> Result<Option<Vec<u8>>> {
+        for zdb_reader in self.zdb_readers.borrow_mut().iter_mut() {
+            if let Some(data) = zdb_reader.get_data_by_key_normalized(file_path)? {
+                return Ok(Some(data));
+            }
+        }
+        Ok(None)
+    }
 }
