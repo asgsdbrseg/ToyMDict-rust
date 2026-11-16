@@ -1,0 +1,14 @@
+[workspace]
+members = ["src-tauri", "vendor/mdx"]
+resolver = "2"
+
+# 让 windows-gnu 也静态链接 WebView2LoaderStatic.lib，产出真正的单文件 exe
+[patch.crates-io]
+webview2-com-sys = { path = "vendor/webview2-com-sys" }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

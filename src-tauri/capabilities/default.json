@@ -1,0 +1,12 @@
+{
+  "identifier": "default",
+  "description": "ToyMDict 主窗口权限。dialog:default 含 allow-message/allow-open/allow-save；原生 alert/confirm 由 Tauri 转成 plugin:dialog|message 命令，必须放行，否则删除分组等操作会被 ACL 拒绝。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:webview:default",
+    "dialog:default"
+  ]
+}
