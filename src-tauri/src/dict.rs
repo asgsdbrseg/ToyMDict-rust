@@ -493,10 +493,17 @@ pub fn get_resource(path: &str, file: &str) -> Result<Option<(Vec<u8>, String)>,
             Some(m) => m,
             None => return None,
         };
+        // ① 常规精确查找（原样/小写 × 正/反斜杠 × 前导分隔符）
         for c in &candidates {
             if let Ok(Some(bytes)) = mdd.get_data_by_key(c) {
                 return Some(bytes);
             }
+        }
+        // ② 归一化逐 key 比对兜底（对齐 Python 版 MDD.get）：V3 ICU collation
+        //    对含中文路径 + 大小写混合的资源（如 基本/600F.png）二分定位会落空，
+        //    这里只在精确查找全部失败后扫一次，避免部分图片 404。
+        if let Ok(Some(bytes)) = mdd.get_data_by_key_normalized(&decoded) {
+            return Some(bytes);
         }
         None
     })
@@ -1086,6 +1093,18 @@ mod tests {
             "/css/style.css",
         ] {
             assert!(c.contains(&want.to_string()), "缺候选 {}: {:?}", want, c);
+        }
+    }
+
+    #[test]
+    fn 中文路径资源归一化后大小写与斜杠无关() {
+        // 复现 基本/600F.png 场景：MDD 内部 key 可能是 \基本\600f.png，
+        // 归一化（小写 + \→/ + 去前导/）后应与查询完全一致。
+        let query = "基本/600F.png";
+        let norm = normalize_resource_path(query);
+        assert_eq!(norm, "基本/600f.png");
+        for internal in [r"\基本\600f.png", "/基本/600F.png", r"基本\600F.png", "基本/600f.png"] {
+            assert_eq!(normalize_resource_path(internal), norm, "归一化不一致: {}", internal);
         }
     }
 
