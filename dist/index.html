@@ -5,6 +5,16 @@
     <title>ToyMDict</title>
     <link rel="stylesheet" href="style.css">
     <!-- custom.css 由用户手动放在 exe 同目录，经 mdx 协议由 tauri-bridge.js 动态注入 -->
+    <script>
+    // 词条 iframe 的 origin，供 app.js 的 isTrustedMessage 校验 iframe 发来的
+    // resize 消息。缺失会让 ENTRY_ORIGIN 为空、所有 resize 被忽略、iframe 高度
+    // 恒为 0，导致所有词条内容不可见（无法展开）。取值与后端 protocol_base()
+    // 一致：Windows 自定义协议映射为 http://mdx.localhost，其它为 mdx://localhost，
+    // 与主窗口 location.protocol 对应。
+    window.TOYMDICT_ORIGIN = (location.protocol === 'http:')
+        ? 'http://mdx.localhost'
+        : 'mdx://localhost';
+    </script>
 </head>
 <body>
     <div class="toolbar">

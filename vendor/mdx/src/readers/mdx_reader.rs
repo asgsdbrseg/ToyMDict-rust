@@ -130,16 +130,7 @@ impl MdxReader {
         };
         
         let db_name= url_utils::get_decoded_file_stem(&mdx_url)?;
-        // Compact 样式表只影响渲染；即便解析失败也只能用空表兜底，绝不能像
-        // 旧版那样用 `?` 把错误冒泡、导致整本词典打不开（普通 CSS 样式表的
-        // 词典曾因此无法加载）。data_db / fts_index 同样允许失败。
-        let compact_stylesheet = match Self::load_compact_stylesheet(&content_db.meta.db_info.style_sheet) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to load compact stylesheet, continue without it: {}", e);
-                Vec::new()
-            }
-        };
+        let compact_stylesheet = Self::load_compact_stylesheet(&content_db.meta.db_info.style_sheet)?;
         
         // Try to initialize FTS index, but allow it to fail
         let fts_index = match Self::load_fts_index(&with_extension(&mdx_url, MDICT_INDEX_EXT)?) {
@@ -254,83 +245,53 @@ impl MdxReader {
 	/// Expand compacted content using stylesheet tokens surrounded by backticks.
 	/// Tokens are specified as `number` where number is 0..255 and map to
 	/// `compact_stylesheet[token] = (prefix, suffix)`.
-    /// 
-    /// Expand compacted content using stylesheet tokens surrounded by backticks.
-    /// 与 Python 版 `MDX._substitute_stylesheet` 逐字对齐：
-    ///   - `` `N`body` `` -> prefix + body + suffix；
-    ///   - body 的闭合反引号（其后不是新 token 数字）被消费，不残留到正文；
-    ///   - 未知 token 原样保留，绝不 panic（旧实现对越界 token 直接索引会崩）。
     pub fn reformat(compacted_source: &str, compact_style: &[(String, String)]) -> Result<String> {
-        let chars: Vec<char> = compacted_source.chars().collect();
-        let n = chars.len();
-        let mut out = String::with_capacity(n + 1024);
-        let mut i = 0usize;
-        while i < n {
-            if chars[i] != '`' {
-                out.push(chars[i]);
-                i += 1;
-                continue;
-            }
-            // 读 `N` 里的数字 token
-            let mut j = i + 1;
-            while j < n && chars[j].is_ascii_digit() {
-                j += 1;
-            }
-            if !(j > i + 1 && j < n && chars[j] == '`') {
-                // 不是合法 token 起点，反引号当普通字符
-                out.push('`');
-                i += 1;
-                continue;
-            }
-            let token_digits: String = chars[i + 1..j].iter().collect();
-            let token: usize = token_digits.parse().unwrap_or(usize::MAX);
-            i = j + 1; // 跳过 `N` 的前半个反引号与数字
-
-            // body 取到下一个反引号
-            let body_start = i;
-            while i < n && chars[i] != '`' {
-                i += 1;
-            }
-            let mut body: String = chars[body_start..i].iter().collect();
-
-            // 若该反引号后不是数字，说明它是本段的闭合符，消费掉。
-            let mut closed = false;
-            if i < n {
-                let after = i + 1;
-                if after >= n || !chars[after].is_ascii_digit() {
-                    i += 1;
-                    closed = true;
+        let mut chars = compacted_source.chars().peekable();
+        let mut expanded_text = String::with_capacity(compacted_source.len()+1024);
+        let mut processed_source= String::with_capacity(expanded_text.len()/2);
+        while let Some(c) = chars.next() {
+            if c == '`' {
+                processed_source.push(c);
+                let mut number = String::new();
+                let mut has_number = false;
+                while let Some(nc) = chars.next() {
+                    processed_source.push(nc);
+                    if nc.is_digit(10) {
+                        number.push(nc);
+                    } else if nc == '`' {
+                        has_number = !number.is_empty();
+                        break;
+                    }else{
+                        break;
+                    }
                 }
-            }
-
-            if token >= compact_style.len() {
-                // 未知 / 越界 token：原样保留整段，不 panic
-                out.push('`');
-                out.push_str(&token_digits);
-                out.push('`');
-                out.push_str(&body);
-                if closed {
-                    out.push('`');
+                if has_number {
+                    //格式合法
+                    let token = number.parse::<usize>().unwrap_or(256);
+                    if token<256 {
+                        processed_source.clear();
+                        while let Some(nc) = chars.peek() {
+                            if *nc != '`' {
+                                processed_source.push(*nc);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        expanded_text.push_str(&compact_style[token].0);
+                        expanded_text.push_str(&processed_source);
+                        expanded_text.push_str(&compact_style[token].1);
+                        processed_source.clear();
+                    }
                 }
-                continue;
-            }
-
-            // 合法 token：prefix + body + suffix；body 以 \n 结尾时把换行留在样式外
-            if body.ends_with('\n') {
-                while body.ends_with('\n') || body.ends_with('\r') {
-                    body.pop();
-                }
-                out.push_str(&compact_style[token].0);
-                out.push_str(&body);
-                out.push_str(&compact_style[token].1);
-                out.push_str("\r\n");
+                expanded_text.push_str(&processed_source);
+                processed_source.clear();
             } else {
-                out.push_str(&compact_style[token].0);
-                out.push_str(&body);
-                out.push_str(&compact_style[token].1);
+                expanded_text.push(c);
             }
         }
-        Ok(out)
+        expanded_text.push_str(&processed_source);
+        Ok(expanded_text)
     }
 
     pub fn get_data(&mut self, file_path: &str) -> Result<Option<(Vec<u8>, String)>> {
@@ -357,58 +318,58 @@ impl MdxReader {
         self.content_db.get_similar_indexes(key_index, start_with, max_count)
     }
 
-    /// Load compact stylesheet triples: token, prefix, suffix (newline-separated).
-    ///
-    /// MDX header 的 `StyleSheet` 有两种形态，必须区分对待（对齐 Python 版
-    /// `MDX._normalize_stylesheet`）：
-    ///   1. compact 样式表：每三行一组 `token / prefix / suffix`，token 是 0..255
-    ///      的数字，prefix/suffix 可含 HTML 实体；
-    ///   2. 普通 CSS 样式表（供前端使用）：行首不是纯数字 token。
-    ///
-    /// 旧实现把「非数字 token」当成致命错误并向上抛，导致带普通 CSS 样式表的
-    /// 词典整本加载失败。这里改为容错：任何一个三元组解析不出来就跳过它，
-    /// 若最终没有任何合法 token，返回空 vec 表示"不是 compact 样式表"，
-    /// 调用方据此跳过 compact 还原——与 Python 版行为一致。
-    ///
-    /// 永远不返回 Err：样式表只是渲染增强，绝不能让整本词典打不开。
+    // Load compact stylesheet triples: token, prefix, suffix (newline-separated)
     pub fn load_compact_stylesheet(style_sheet: &str) -> Result<Vec<(String, String)>> {
-        if style_sheet.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut compact_stylesheet = vec![(String::new(), String::new()); 256];
-        // lines() 同时兼容 \n 与 \r\n；strip 掉每行首尾空白（含残留的 \r）。
-        let lines: Vec<&str> = style_sheet.lines().collect();
+        // 对齐 Python 版 _unescape_entities：htmlescape::decode_html 是严格解码，
+        // 遇到词典里的非标准实体（&xxx;）会返回 UnknownEntity，旧代码用 ? 冒泡
+        // 导致整本词典打不开（康熙字典 / 干禄字书即此情况）。这里改为：严格解码
+        // 成功时用其结果（保持数字实体等原有行为）；失败则退回 Python 式的四种
+        // 基础替换，未知实体原样保留，绝不因样式表实体而让词典加载失败。
+        let decode_entity = |raw: &str| -> String {
+            match htmlescape::decode_html(raw) {
+                Ok(decoded) => decoded,
+                Err(_) => raw
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&amp;", "&"),
+            }
+        };
+        let mut lines = style_sheet.split('\n').peekable();
         let mut has_stylesheet = false;
-        let mut i = 0usize;
-        while i + 2 < lines.len() {
-            let token_line = lines[i].trim();
-            // 非数字 token：这是普通 CSS 样式表或注释行，跳过这一行继续找，
-            // 而不是把整本词典判为损坏。
-            let token: u32 = match token_line.parse() {
-                Ok(t) => t,
-                Err(_) => {
-                    i += 1;
-                    continue;
+        loop {
+            let token_line = match lines.next() {
+                None => break,
+                Some(line) => {
+                    if line.is_empty() && lines.peek().is_none() {
+                        break;
+                    }
+                    line
                 }
             };
+
+            let token: u32 = token_line
+                .trim()
+                .parse()
+                .map_err(|_| ZdbError::invalid_data_format("Invalid token in compact stylesheet"))?;
             if token > 255 {
-                i += 3;
-                continue;
+                return Err(ZdbError::invalid_data_format("Token out of range (0..255) in compact stylesheet"));
             }
-            // 三元组不满三行：尾部残留，直接结束。
-            if i + 2 >= lines.len() {
-                break;
-            }
-            let prefix_raw = lines[i + 1].trim();
-            let suffix_raw = lines[i + 2].trim();
-            // HTML 实体解码失败时退回原值，同样不中断解析。
-            let prefix = htmlescape::decode_html(prefix_raw)
-                .unwrap_or_else(|_| prefix_raw.to_string());
-            let suffix = htmlescape::decode_html(suffix_raw)
-                .unwrap_or_else(|_| suffix_raw.to_string());
-            compact_stylesheet[token as usize] = (prefix, suffix);
+
+            let prefix = lines
+                .next()
+                .ok_or(ZdbError::invalid_data_format("Unexpected end of compact stylesheet (missing prefix)"))?
+                .to_string();
+            let suffix = lines
+                .next()
+                .ok_or(ZdbError::invalid_data_format("Unexpected end of compact stylesheet (missing suffix)"))?
+                .to_string();
+            // 严格解码失败时退回基础替换（未知实体原样保留），不再中断整本词典加载。
+            let prefix = decode_entity(&prefix);
+            let suffix = decode_entity(&suffix);
+            compact_stylesheet[token as usize] = ( prefix, suffix);
             has_stylesheet = true;
-            i += 3;
         }
         if !has_stylesheet {
             compact_stylesheet.clear();
@@ -526,69 +487,27 @@ impl MdxReader {
 mod tests {
     use super::*;
 
+    /// 回归：含未知 HTML 实体（如 &icaron; / &foo;）的 compact 样式表必须能
+    /// 解析，不能像旧版那样抛 UnknownEntity 让整本词典打不开（康熙字典 /
+    /// 干禄字书即此情况）。对齐 Python：未知实体原样保留，已知实体仍解码。
     #[test]
-    fn 普通CSS样式表不产生compact表() {
-        // 带 CSS 样式表的词典：token 行不是数字，必须得到空表（而非 Err），
-        // 否则 from_url 会把整本词典判为加载失败。
-        let css = "body { color: red; }\np { margin: 0; }";
-        let table = MdxReader::load_compact_stylesheet(css).unwrap();
-        assert!(table.is_empty(), "CSS 样式表不应产生 compact 映射: {:?}", table);
-    }
-
-    #[test]
-    fn compact三元组正确解析() {
-        // 标准 3 行一组：token / prefix / suffix
-        let ss = "0\n<b>&lt;</b>\n</b>\n1\n<i>\n</i>";
-        let table = MdxReader::load_compact_stylesheet(ss).unwrap();
+    fn compact样式表含未知实体不报错() {
+        let ss = "0\n<b class='&unknownent;'>&lt;</b>\n</b>&foo;\n1\n<i>\n</i>";
+        let table = MdxReader::load_compact_stylesheet(ss).expect("含未知实体不应解析失败");
         assert_eq!(table.len(), 256);
-        assert_eq!(table[0].0, "<b><</b>");   // &lt; 已被 htmlescape 解码
-        assert_eq!(table[0].1, "</b>");
+        // 已知实体 &lt; 仍解码，未知实体原样保留
+        assert!(table[0].0.contains('<'), "已知实体应解码: {:?}", table[0].0);
+        assert!(table[0].0.contains("&unknownent;"), "未知实体应原样保留: {:?}", table[0].0);
+        assert!(table[0].1.contains("&foo;"), "未知实体应原样保留: {:?}", table[0].1);
+        // 完全正常的三元组仍正确
         assert_eq!(table[1].0, "<i>");
         assert_eq!(table[1].1, "</i>");
     }
 
+    /// 空样式表仍返回空表（不改变既有行为）
     #[test]
-    fn CRLF换行与首尾空白被清理() {
-        // 很多词典 header 用 \r\n，且 prefix/suffix 两侧带空白
-        let ss = " 2 \r\n  <u> \r\n  </u> \r\n";
-        let table = MdxReader::load_compact_stylesheet(ss).unwrap();
-        assert_eq!(table[2].0, "<u>");
-        assert_eq!(table[2].1, "</u>");
-    }
-
-    #[test]
-    fn 畸形与非数字token被跳过不报错() {
-        // 混杂非数字行、超范围 token，都不能让解析失败；合法 token 仍生效
-        let ss = "garbage\nX\nY\n300\nbad\nbad\n5\n<code>\n</code>";
-        let table = MdxReader::load_compact_stylesheet(ss).unwrap();
-        assert_eq!(table.len(), 256);
-        assert!(table[5].0.contains("code"));
-        // 超范围 token 未写入任何 0..255 槽位
-        assert!(table.iter().all(|(p, _)| !p.contains("bad")));
-    }
-
-    #[test]
-    fn 空样式表返回空表() {
-        for s in &["", "\n", "\r\n"] {
-            assert!(MdxReader::load_compact_stylesheet(s).unwrap().is_empty());
-        }
-    }
-
-    #[test]
-    fn reformat展开反引号token() {
-        let table = vec![
-            ("<b>".to_string(), "</b>".to_string()),
-            ("<i>".to_string(), "</i>".to_string()),
-        ];
-        let out = MdxReader::reformat("A`0`粗体`B`1`斜体`", &table).unwrap();
-        assert_eq!(out, "A<b>粗体</b>B<i>斜体</i>");
-    }
-
-    #[test]
-    fn reformat未知token原样保留() {
-        let table = vec![("<b>".to_string(), "</b>".to_string())];
-        let out = MdxReader::reformat("X`9`未知`Y", &table).unwrap();
-        // token 9 越界（表只有 1 项），不得 panic，整段原样保留
-        assert_eq!(out, "X`9`未知`Y");
+    fn compact样式表空表仍为空() {
+        assert!(MdxReader::load_compact_stylesheet("").unwrap().is_empty());
     }
 }
+

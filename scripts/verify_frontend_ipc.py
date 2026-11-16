@@ -181,8 +181,13 @@ HARNESS = r'''
             var f = document.querySelector('#contentArea iframe[id^="dict-iframe-"]');
             window.__HEIGHT_ZERO__ = !!(f && parseInt(f.style.height, 10) === 0);
             if (f) {
+                // 真实词条 iframe 的 postMessage 会携带自己的 origin；app.js
+                // 的 isTrustedMessage 要求 event.origin === TOYMDICT_ORIGIN，
+                // 所以这里必须带上正确 origin，否则是假阴性（消息被安全校验
+                // 丢弃，看起来就像「条目无法展开」）。
                 window.dispatchEvent(new MessageEvent('message', {
-                    data: { type: 'resize', id: f.id, height: 460 }
+                    data: { type: 'resize', id: f.id, height: 460 },
+                    origin: window.TOYMDICT_ORIGIN || 'http://mdx.localhost'
                 }));
                 window.__HEIGHT_SET__ = parseInt(f.style.height, 10) === 460;
                 try { f.contentWindow.postMessage('calcHeight', '*'); } catch (e) {}

@@ -237,6 +237,13 @@
     // custom.css 由用户手动放在 exe 同目录，经自定义协议提供
     invoke('get_protocol_base').then(function (base) {
         if (!base) return;
+        // 词条 iframe 的 src 用的就是后端的 protocol_base()，因此它的
+        // postMessage origin === base。app.js 顶部同步求值的 ENTRY_ORIGIN
+        // 只靠 location.protocol 猜测，这里用后端真实值纠正，避免个别
+        // WebView 版本主窗口协议不同导致 isTrustedMessage 误拦截 resize，
+        // 使所有词条 iframe 停在 0 高（表现为条目无法展开）。
+        window.TOYMDICT_ORIGIN = base;
+        window.ENTRY_ORIGIN = base;
         var link = document.createElement('link');
         link.rel = 'stylesheet';
         link.href = base + '/static/custom.css';

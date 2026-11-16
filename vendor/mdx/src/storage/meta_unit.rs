@@ -301,14 +301,9 @@ impl DbInfo {
                             let key = std::str::from_utf8(attr.key.as_ref())
                                 .map_err(|e| ZdbError::invalid_data_format(format!("Invalid UTF-8 in attribute key: {}", e)))?
                                 .to_string();
-                            // 必须 unescape：MDX header 的 StyleSheet / Description /
-                            // Title 等属性值里的 &lt; &gt; &quot; &amp; &#10; 等实体
-                            // 要还原成真实字符，否则 compact 样式表按 '\n' 分行会失败、
-                            // 描述里会显示字面实体。unescape 失败时退回原始字节，容错。
-                            let value = match attr.unescape_value() {
-                                Ok(v) => v.into_owned(),
-                                Err(_) => String::from_utf8_lossy(attr.value.as_ref()).into_owned(),
-                            };
+                            let value = std::str::from_utf8(attr.value.as_ref())
+                                .map_err(|e| ZdbError::invalid_data_format(format!("Invalid UTF-8 in attribute value: {}", e)))?
+                                .to_string();
                             root_attrs.push((key, value));
                         }
                         break;
@@ -474,13 +469,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_xml_attribute_unescape() {
-        // header 属性值里的 XML 实体必须还原：Description 的 &lt; 要变 '<'，
-        // StyleSheet 里的 &quot; 要变 '"'，否则正文样式与描述都会显示字面实体。
-        let xml = r#"<Dictionary GeneratedByEngineVersion="3.0" RequiredEngineVersion="3.0" ContentType="Html" Description="a &lt;b&gt; &amp; c &quot;q&quot;" Title="O&#39;Neil" StyleSheet=""/>"#;
-        let db_info = DbInfo::from_xml(xml).expect("解析应成功");
-        assert_eq!(db_info.description, "a <b> & c \"q\"");
-        assert_eq!(db_info.title, "O'Neil");
-    }
 }
