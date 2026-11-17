@@ -316,6 +316,29 @@ impl<R: Read + Seek> ZdbReader<R> {
         }
     }
 
+    /// 归一化资源 key：与 Python 版 `_normalize_path` 一致——转小写、反斜杠转正斜杠、
+    /// 去前导 `/`。MD 词典的 MDD 资源 key 大小写与分隔符视词典制作工具而异（同一本
+    /// 词典里 `基本/600F.png` 与 `\基本\600f.png` 可能混用），精确匹配会在部分资源上落空。
+    fn normalize_resource_key(key: &str) -> String {
+        key.replace('\\', "/").trim_start_matches('/').to_lowercase()
+    }
+
+    /// 归一化后逐 key 比对的兜底查找（对齐 Python 版 MDD.get 的 _scan_block + 全块扫描）。
+    /// 仅当常规精确/ICU collation 查找失败时调用：遍历全部条目，把每个 key 与查询都
+    /// 归一化后精确比对，命中即取数据。解决 V3 collation 排序下中文路径 + 大小写混合
+    /// 资源（如 `基本/600F.png`）二分定位落空导致的 404。
+    pub fn get_data_by_key_normalized(&mut self, key: &str) -> crate::Result<Option<Vec<u8>>> {
+        let target = Self::normalize_resource_key(key);
+        let count = self.get_entry_count();
+        for entry_no in 0..count {
+            let index = self.get_index(entry_no as EntryNo)?;
+            if Self::normalize_resource_key(&index.key) == target {
+                return Ok(Some(self.get_data(&index, true)?));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn get_data(&mut self, key_index: &KeyIndex, resolve_link: bool) -> crate::Result<Vec<u8>> {
         let resolved_index = if resolve_link {
             self.resolve_link_target_with_visited(key_index, None)?

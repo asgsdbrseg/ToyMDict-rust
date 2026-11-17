@@ -14,7 +14,7 @@ variants.json         <- 手动放置，异体字表
 
 首次运行会在同目录自动生成 `dict_groups.json`（词典列表与分组）和 `toymdict.log`（**每次启动清空，只记录本次**）。缺 `custom.css` / `variants.json` 时程序仍可启动，只是没有自定义字体和异体字功能。
 
-> `dict_groups.json` 与 Python 版**同名、同结构**（`all_dicts` / `groups` / `excluded` / `current_group`），可直接把 Python 版的配置文件复制过来复用，无需重新导入词典。`groups` 里分组的排列顺序按文件中的顺序原样显示并原样写回，不会按分组名重排。旧版 Rust 构建的 `toymdict.json` 也会被自动读取，并在此后统一改用 `dict_groups.json` 保存。**不要同时运行 Python 版和 Rust 版**，两者会写同一份文件。
+> `dict_groups.json` 与 Python 版**同名、同结构**（`all_dicts` / `groups` / `excluded` / `current_group`），可直接把 Python 版的配置文件复制过来复用，无需重新导入词典。`groups` 里分组的排列顺序按文件中的顺序原样显示并原样写回，不会按分组名重排。只读取 `dict_groups.json`，不再兼容旧版 `toymdict.json`。**不要同时运行 Python 版和 Rust 版**，两者会写同一份文件。
 
 > Windows 10 1803+ / 11 自带 WebView2 Runtime，无需额外安装。极老的精简系统若提示缺少 WebView2，装一次「Microsoft Edge WebView2 Runtime」即可（这是系统组件，不是本程序的安装步骤）。
 
@@ -199,7 +199,7 @@ custom.css / variants.json  运行时外部文件
 - **正则语法**：改用 Rust `regex`，不支持 Python `re` 的环视 `(?=...)`、`(?<=...)` 与反向引用 `\1`；这类表达式会给出明确的「正则表达式无效」提示。其余常用语法一致，且同样默认忽略大小写。
 - **全文搜索**：为实时扫描（无 Lucene/Tantivy 索引），大词典首次全文搜索会较慢；本版已取消每词典 10000 条命中上限，可随时「停止」中断。libmdx 自带 Tantivy FTS，若词典旁有 `.idx` 索引可在后续版本接入。
 - **排序**：`mdx` 启用纯 Rust 的 `icu` feature（ICU4X），前缀查找与相似词定位由 libmdx 的 locale-aware sort key 完成；主界面结果列表**精确匹配置顶**，其余按**词条长度升序**（同长按字典序），不再按 Unicode 码位序。分组顺序则按 `dict_groups.json` 的写入顺序原样保留。
-- **配置**：改用与 Python 版同名的 `dict_groups.json`，字段结构一致，可直接复用；读取时给 `AppConfig` / `DictMeta` 加了 `#[serde(default)]`，Python 版写出的条目即使缺 `name` 等字段也能正常加载。仅文件名兼容，旧版 `toymdict.json` 会自动沿用一次。
+- **配置**：改用与 Python 版同名的 `dict_groups.json`，字段结构一致，可直接复用；读取时给 `AppConfig` / `DictMeta` 加了 `#[serde(default)]`，Python 版写出的条目即使缺 `name` 等字段也能正常加载。只读取 `dict_groups.json`，不再兼容旧版 `toymdict.json`。
 - **全局热键**：已移植原版「双击 Ctrl 取词」（见「快捷键」节）。原实现依赖 `pynput` + `pyperclip`，Rust 版改用 Win32 低级键盘钩子、系统剪贴板 API 与带扫描码的模拟按键，不需要额外插件，也不增加随附 DLL。取词链路与 Python 版一致（一律模拟 Ctrl+C 读剪贴板），并额外补了前端本地双击 Ctrl + 词条 iframe 选区主动上报通道，用时间戳与后端结果去重，修好在程序自己界面里选词取不到的问题。其它平台暂不提供系统级取词。
 - **词典信息描述**：与 Python 版一致，用 `<iframe srcdoc>` + `html.escape(quote=True)` 属性转义隔离显示（srcdoc 属性会把实体再解一层，标签才得以渲染），固定高度 150px、带边框圆角。两者的差别只在数据来源：Python 版由 `readmdict.py` 解析 Header XML 时解码实体，本版由 `dict_metadata()` 的 `parse_header_attrs()`（`xml_unescape`）解码，拿到的都是可渲染的原始 HTML 文本。
 - **词典加密**：`Encrypted=2`、V3 UUID 派生密钥等格式由 libmdx 处理，行为以其实现为准。

@@ -264,16 +264,13 @@ fn import_paths(state: &Arc<AppState>, app: &AppHandle, paths: Vec<String>) {
         match dict::load_dict(state, &abs) {
             Ok(info) => {
                 let mut cfg = state.config.lock();
+                // 与 Python 版一致：导入的词典只登记到"全部词典"(all_dicts)，
+                // 不自动加入当前分组；由用户在分组视图中显式添加。
                 if !cfg.all_dicts.iter().any(|d| d.id == abs) {
                     cfg.all_dicts.push(DictMeta {
                         id: abs.clone(),
                         name: info.name.clone(),
                     });
-                }
-                let group = cfg.current_group.clone();
-                let list = cfg.groups.entry(group).or_default();
-                if !list.contains(&abs) {
-                    list.push(abs.clone());
                 }
                 cfg.excluded.retain(|x| x != &abs);
                 drop(cfg);
@@ -479,16 +476,9 @@ fn delete_group(app: AppHandle, state: State<'_, Arc<AppState>>) {
         let cur = cfg.current_group.clone();
         // shift_remove 保留其余分组的原有顺序（IndexMap::remove 是 swap_remove，会打乱顺序）
         cfg.groups.shift_remove(&cur);
+        // 与 Python 版一致：当前分组置空，不再自动重建"默认分组"。
+        // 需要搜索时由用户显式新建分组并添加词典。
         cfg.current_group.clear();
-        // 删光分组后避免下拉框空掉，重建默认分组并提示。
-        if cfg.groups.is_empty() {
-            cfg.groups.insert("默认分组".to_string(), Vec::new());
-            cfg.current_group = "默认分组".to_string();
-            st.report_error(
-                "分组已全部删除",
-                "已自动重建「默认分组」，词典需要重新添加到分组中",
-            );
-        }
     }
     st.save_config();
     refresh_ui(st, &app);

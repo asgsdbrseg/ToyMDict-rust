@@ -5,7 +5,7 @@
 //! `_internal` 之类的附属文件夹。
 //!
 //! 配置文件名与 Python 版一致（`dict_groups.json`），可直接复用同一份分组配置；
-//! 旧版 `toymdict.json` 仍会被读取并自动改用新文件名保存。
+//! 只读取 `dict_groups.json`，不再兼容旧版 `toymdict.json`。
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -39,30 +39,24 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// 首次启动的默认配置：与 Python 版一致，不预建任何分组，
+    /// current_group 为空串（由用户显式新建分组并添加词典）。
     pub fn with_defaults() -> Self {
-        let mut groups = IndexMap::new();
-        groups.insert("默认分组".to_string(), Vec::new());
         Self {
             all_dicts: Vec::new(),
-            groups,
-            current_group: "默认分组".to_string(),
+            groups: IndexMap::new(),
+            current_group: String::new(),
             excluded: Vec::new(),
         }
     }
 
     /// 读取外部（尤其是 Python 版写出的）配置后补齐不变量：
-    /// 至少有一个分组，且 current_group 指向真实存在的分组。
+    /// 不创建默认分组；current_group 只允许指向真实存在的分组，
+    /// 否则清空（保持与 Python 版一致：无分组时 current_group 为空串）。
     pub fn normalized(mut self) -> Self {
-        if self.groups.is_empty() {
-            self.groups.insert("默认分组".to_string(), Vec::new());
-        }
         if self.current_group.is_empty() || !self.groups.contains_key(&self.current_group) {
-            self.current_group = self
-                .groups
-                .keys()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| "默认分组".to_string());
+            // 有分组则指向首个；无分组则保持空串（绝不创建"默认分组"）。
+            self.current_group = self.groups.keys().next().cloned().unwrap_or_default();
         }
         self
     }
@@ -121,9 +115,7 @@ impl AppState {
         let _ = fs::write(&log_path, b"");
 
         let config_path = base_dir.join("dict_groups.json");
-        let legacy_path = base_dir.join("toymdict.json");
-        let migrated = !config_path.exists() && legacy_path.exists();
-        let config_bytes = fs::read(&config_path).or_else(|_| fs::read(&legacy_path));
+        let config_bytes = fs::read(&config_path);
         // 文件不存在 = 首次启动，不算错误；文件存在却解析失败必须弹窗提示，
         // 否则用户会以为词典与分组莫名丢失。
         let config_error = match &config_bytes {
@@ -170,9 +162,6 @@ impl AppState {
             state.variants.read().len(),
             state.config.lock().all_dicts.len()
         ));
-        if migrated {
-            state.log("检测到旧版 toymdict.json，已沿用其配置；后续统一写入 dict_groups.json");
-        }
         if !variants_path.exists() {
             state.log("提示：exe 旁未找到 variants.json，异体字功能不可用");
         }
@@ -367,12 +356,18 @@ mod tests {
     }
 
     #[test]
-    fn 缺字段的配置也能读取() {
+    fn 缺字段的配置也能读取_且不创建默认分组() {
         let cfg = serde_json::from_str::<AppConfig>(r#"{"groups": {}, "current_group": ""}"#)
             .unwrap()
             .normalized();
-        assert_eq!(cfg.current_group, "默认分组");
-        assert!(cfg.groups.contains_key("默认分组"));
+        // 不再自动创建"默认分组"：分组保持空，current_group 保持空串。
+        assert_eq!(cfg.current_group, "");
+        assert!(cfg.groups.is_empty());
         assert!(cfg.excluded.is_empty());
+
+        // with_defaults 首次启动同样不预建分组。
+        let fresh = AppConfig::with_defaults();
+        assert!(fresh.groups.is_empty());
+        assert_eq!(fresh.current_group, "");
     }
 }
