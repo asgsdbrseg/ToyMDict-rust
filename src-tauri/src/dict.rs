@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 use mdx::readers::MdxReader;
 use rayon::prelude::*;
+// 普通搜索/异体字前缀过滤用 regex（Deterministic，无回溯，更快）；
+// 高级搜索用 fancy_regex（支持反向引用与环视，对齐前端 JS RegExp）。
+// 两者都保持关闭 DOTALL：`.` 不匹配换行，与 Python 版默认一致。
+use fancy_regex::Regex as FancyRegex;
 use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -657,13 +661,16 @@ pub fn compile_pattern(
     pattern: &str,
     use_variants: bool,
     variants: &HashMap<String, Vec<String>>,
-) -> Result<(Regex, String), String> {
+) -> Result<(FancyRegex, String), String> {
     let expanded = if use_variants {
         expand_pattern(pattern, variants)
     } else {
         pattern.to_string()
     };
-    let re = RegexBuilder::new(&expanded)
+    // 高级搜索改用 fancy_regex：支持反向引用（\1）与环视（(?=)/(?<=)），
+    // 与前端 JS RegExp 能力对齐。沿用原大小写不敏感行为；显式不开 DOTALL：
+    // `.` 不匹配换行，与 Python 版默认一致（用户要求不开 DOTALL）。
+    let re = fancy_regex::RegexBuilder::new(&expanded)
         .case_insensitive(true)
         .build()
         .map_err(|e| format!("正则表达式无效：{}", e))?;
@@ -829,7 +836,7 @@ pub struct AdvCtx {
     pub total: usize,
     pub done: Arc<AtomicUsize>,
     pub hits: Arc<AtomicUsize>,
-    pub re: Regex,
+    pub re: FancyRegex,
     pub scope: String,
 }
 
@@ -899,13 +906,15 @@ pub fn scan_one(ctx: Arc<AdvCtx>, path: String) {
                 if ctx.state.adv_cancelled(ctx.gen) {
                     break;
                 }
+                // fancy_regex 的 is_match 返回 Result（回溯引擎在极端输入下可能报错）。
+                // 单条匹配出错视为未命中，不影响整本词典的扫描。
                 let matched = if fulltext {
                     match r.get_html(ki) {
-                        Ok(raw) => ctx.re.is_match(&html::strip_html(&raw)),
+                        Ok(raw) => ctx.re.is_match(&html::strip_html(&raw)).unwrap_or(false),
                         Err(_) => false,
                     }
                 } else {
-                    ctx.re.is_match(&ki.key)
+                    ctx.re.is_match(&ki.key).unwrap_or(false)
                 };
                 if matched {
                     batch.push(json!({ "key": ki.key, "idx": ki.entry_no }));
@@ -962,18 +971,55 @@ mod tests {
     fn 正则编译与匹配() {
         let (re, expanded) = compile_pattern("南朝宋", false, &variants()).unwrap();
         assert_eq!(expanded, "南朝宋");
-        assert!(re.is_match("xx南朝宋yy"));
+        assert!(re.is_match("xx南朝宋yy").unwrap());
         let (re2, _) = compile_pattern("黄钟", true, &variants()).unwrap();
-        assert!(re2.is_match("黃鐘"));
-        assert!(re2.is_match("黄钟"));
-        assert!(!re2.is_match("黄铜"));
+        assert!(re2.is_match("黃鐘").unwrap());
+        assert!(re2.is_match("黄钟").unwrap());
+        assert!(!re2.is_match("黄铜").unwrap());
     }
 
     #[test]
     fn 非法正则给出错误而非崩溃() {
         assert!(compile_pattern("[", false, &variants()).is_err());
-        // Rust regex 不支持反向引用，应给出明确错误
-        assert!(compile_pattern(r"(a)\1", false, &variants()).is_err());
+        // 不配对的括号仍应给出明确错误
+        assert!(compile_pattern("(abc", false, &variants()).is_err());
+    }
+
+    #[test]
+    fn 高级搜索支持反向引用() {
+        // 数字反向引用：旧 regex crate 不支持，fancy_regex 应与前端 JS 一致。
+        let (re, _) = compile_pattern(r"(\w)\1", false, &variants()).unwrap();
+        assert!(re.is_match("aa").unwrap());
+        assert!(re.is_match("bookkeeper").unwrap()); // "oo" / "kk" / "ee"
+        assert!(!re.is_match("ab").unwrap());
+        // 注意：fancy_regex 的反向引用按捕获到的原样字符比较，不做大小写折叠，
+        // 这是与 JS RegExp 的细微差异（仅影响「i 标志 + 反向引用」这一边缘组合），
+        // 不影响反向引用主体能力。
+        assert!(!re.is_match("aA").unwrap());
+    }
+
+    #[test]
+    fn 高级搜索支持环视() {
+        // 正向前瞻：匹配后面紧跟「元」的数字
+        let (re, _) = compile_pattern(r"\d+(?=元)", false, &variants()).unwrap();
+        assert!(re.is_match("12元").unwrap());
+        assert!(!re.is_match("12块").unwrap());
+        // 负向前瞻
+        let (re2, _) = compile_pattern(r"钟(?!大吕)", false, &variants()).unwrap();
+        assert!(re2.is_match("钟声").unwrap());
+        assert!(!re2.is_match("钟大吕").unwrap());
+        // 正向后顾（fancy_regex 与 JS 一样要求定长后顾）
+        let (re3, _) = compile_pattern(r"(?<=\d)元", false, &variants()).unwrap();
+        assert!(re3.is_match("2元").unwrap());
+        assert!(!re3.is_match("元").unwrap());
+    }
+
+    #[test]
+    fn 高级搜索默认不开DOTALL() {
+        // 用户明确不开 DOTALL：`.` 不应跨换行匹配。
+        let (re, _) = compile_pattern(r"a.b", false, &variants()).unwrap();
+        assert!(re.is_match("a-b").unwrap());
+        assert!(!re.is_match("a\nb").unwrap());
     }
 
     #[test]

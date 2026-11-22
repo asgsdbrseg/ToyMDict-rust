@@ -23,6 +23,9 @@ serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
 mdx = { path = "../vendor/mdx", features = ["icu"] }
 regex = "1"
+# 高级搜索用：regex crate 不支持反向引用/环视，fancy-regex 支持且兼容常见语法。
+# 普通搜索仍用 regex（更快），高级搜索专用 fancy_regex::Regex。
+fancy-regex = "0.14"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 rayon = "1"

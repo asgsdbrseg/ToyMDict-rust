@@ -60,12 +60,17 @@ document.addEventListener('click', function (e) {
 
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
+        // 报错弹窗层级最高（z-index 3000），只要它可见就必须优先关闭。
+        // 否则按 DOM 顺序 .find() 会先命中高级搜索等弹窗，导致报错弹窗
+        // 关不掉、用户误以为 Esc 失效（典型场景：高级搜索报错后按 Esc）。
+        var errorModal = document.getElementById('errorModal');
+        if (errorModal && errorModal.style.display === 'flex') {
+            closeErrorModal();
+            return;
+        }
         var openModal = Array.prototype.slice.call(document.querySelectorAll('.modal'))
             .find(function (el) { return el.style.display === 'flex'; });
-        if (openModal) {
-            if (openModal.id === 'errorModal') closeErrorModal();
-            else closeModals();
-        }
+        if (openModal) closeModals();
     }
 });
 
